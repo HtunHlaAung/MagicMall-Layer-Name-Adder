@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MagicMall Deep Layer Renamer</title>
+
+<script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+
+<style>
+:root{
+  --bg:#0a0a0c; --box:#1c1c1e; --border:#3a3a3c;
+  --input:#2c2c2e; --text:#e0e0e0; --muted:#8e8e93;
+  --accent:#30d158;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f2f2f7; --box:#fff; --border:#d1d1d6;
+    --input:#f2f2f7; --text:#000; --muted:#6e6e73;
+  }
+}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:system-ui;
+  display:flex; justify-content:center; align-items:center;
+  min-height:100vh; margin:0;
+}
+.box{
+  width:390px; background:var(--box);
+  border:1px solid var(--border);
+  border-radius:20px; padding:30px;
+  box-shadow:0 20px 40px rgba(0,0,0,.5);
+}
+input,select,button{
+  width:100%; padding:14px; margin-bottom:12px;
+  border-radius:10px; border:1px solid var(--border);
+  background:var(--input); color:var(--text);
+  font-size:1rem;
+}
+button{
+  background:var(--accent); color:#000;
+  font-weight:700; cursor:pointer;
+}
+button.secondary{
+  background:transparent;
+  color:var(--text);
+}
+button:disabled{opacity:.5}
+#status,#preview{font-size:.8rem;text-align:center}
+#preview{color:#9ef7a4}
+.spinner{
+  display:none; margin:10px auto;
+  width:22px;height:22px;
+  border:3px solid var(--border);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+}
+@keyframes spin{to{rotate:360deg}}
+</style>
+</head>
+
+<body>
+<div class="box">
+  <h2>Deep Layer Renamer</h2>
+
+  <input type="file" id="files" multiple accept=".json,.tgs">
+  <input type="text" id="tag" placeholder="Tag text (e.g. @MagicMall)">
+  <select id="mode">
+  <option value="append">
+    Append — LayerName @Tag
+  </option>
+  <option value="prefix">
+    Prefix — @Tag LayerName
+  </option>
+  <option value="replace">
+    Replace — @Tag (overwrite name)
+  </option>
+  <option value="index">
+    Indexed — @Tag_001, @Tag_002
+  </option>
+</select>
+
+  <button id="previewBtn">Preview</button>
+  <button id="downloadBtn" class="secondary" disabled>Download</button>
+
+  <div class="spinner" id="spinner"></div>
+  <div id="preview"></div>
+  <div id="status">Ready</div>
+</div>
+
+<script>
+const filesEl = document.getElementById("files");
+const tagEl = document.getElementById("tag");
+const modeEl = document.getElementById("mode");
+const previewBtn = document.getElementById("previewBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const previewEl = document.getElementById("preview");
+const statusEl = document.getElementById("status");
+const spinner = document.getElementById("spinner");
+
+let cachedData = [];
+
+function renameName(old, tag, mode, i){
+  if(mode==="append") return `${old} ${tag}`;
+  if(mode==="prefix") return `${tag} ${old}`;
+  if(mode==="replace") return tag;
+  return `${tag}_${String(i).padStart(3,"0")}`;
+}
+
+function walkLayers(layers, tag, mode, stats, previewOnly){
+  layers.forEach(l=>{
+    if("ty" in l){
+      stats.count++;
+      if(!previewOnly){
+        const old = l.nm || `Layer${stats.count}`;
+        l.nm = renameName(old, tag, mode, stats.count);
+      }
+      if(!stats.example && l.nm)
+        stats.example = renameName(l.nm, tag, mode, stats.count);
+    }
+    if(l.layers) walkLayers(l.layers, tag, mode, stats, previewOnly);
+  });
+}
+
+async function loadFile(file){
+  const buf = await file.arrayBuffer();
+  return file.name.endsWith(".tgs")
+    ? new TextDecoder().decode(pako.ungzip(new Uint8Array(buf)))
+    : new TextDecoder().decode(new Uint8Array(buf));
+}
+
+previewBtn.onclick = async ()=>{
+  const files = filesEl.files;
+  const tag = tagEl.value.trim();
+
+  if(!files.length) return statusEl.textContent="❌ No files selected";
+  if(!tag) return statusEl.textContent="❌ Tag is empty";
+
+  spinner.style.display="block";
+  previewEl.textContent="";
+  cachedData=[];
+  downloadBtn.disabled=true;
+
+  let total=0;
+
+  try{
+    for(const file of files){
+      const json = JSON.parse(await loadFile(file));
+      if(!json.layers) throw "Invalid Lottie";
+
+      const stats={count:0,example:null};
+      walkLayers(json.layers, tag, modeEl.value, stats, true);
+
+      total+=stats.count;
+      cachedData.push({file,json});
+    }
+
+    previewEl.textContent =
+      `Files: ${files.length} | Layers: ${total}`;
+    statusEl.textContent="Preview ready ✔";
+    downloadBtn.disabled=false;
+
+  }catch(e){
+    statusEl.textContent="❌ "+e;
+  }
+
+  spinner.style.display="none";
+};
+
+downloadBtn.onclick = async ()=>{
+  spinner.style.display="block";
+  statusEl.textContent="Downloading...";
+
+  for(const item of cachedData){
+    const stats={count:0};
+    walkLayers(item.json.layers, tagEl.value, modeEl.value, stats, false);
+
+    const out = JSON.stringify(item.json);
+    const data = item.file.name.endsWith(".tgs") ? pako.gzip(out) : out;
+
+    const blob = new Blob([data],{type:"application/octet-stream"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "renamed_" + item.file.name;
+    a.click();
+  }
+
+  spinner.style.display="none";
+  statusEl.textContent="✔ Download complete";
+};
+</script>
+</body>
+</html>
