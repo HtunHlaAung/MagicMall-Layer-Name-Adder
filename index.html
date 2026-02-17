@@ -94,6 +94,36 @@ button:disabled{opacity:.5}
   opacity:.3;
   cursor:not-allowed;
 }
+
+/* --- NEW STYLES FOR LAYER EDITOR --- */
+#layerEditor {
+  display: none;
+  max-height: 250px;
+  overflow-y: auto;
+  margin-top: 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(0,0,0,0.2);
+}
+.layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  transition: background 0.2s;
+}
+.layer-item:hover { background: rgba(255,255,255,0.05); }
+.layer-name { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-actions { display: flex; gap: 5px; }
+.action-btn {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; width: 24px; padding: 0; margin: 0;
+}
+.action-btn:hover { color: var(--accent); }
+.highlight-layer { outline: 2px solid var(--accent) !important; filter: drop-shadow(0 0 5px var(--accent)); }
 </style>
 </head>
 
@@ -116,7 +146,10 @@ button:disabled{opacity:.5}
     <option value="prefix">Prefix — @Tag LayerName</option>
     <option value="replace">Replace — @Tag</option>
     <option value="index">Indexed — @Tag_001</option>
+    <option value="custom">Toggle Layer — Custom Rename</option>
   </select>
+
+  <div id="layerEditor"></div>
 
   <button id="previewBtn">Preview</button>
   <button id="downloadBtn" class="secondary" disabled>Download</button>
@@ -136,6 +169,7 @@ let currentAnimIndex = 0;
 
 const prevBtn = document.getElementById("prevAnim");
 const nextBtn = document.getElementById("nextAnim");
+const layerEditor = document.getElementById("layerEditor");
 
 function playAnimationByIndex(index){
   if(!previewAnimations.length) return;
@@ -152,6 +186,10 @@ function playAnimationByIndex(index){
     loop: true,
     autoplay: true,
     animationData: previewAnimations[currentAnimIndex]
+  });
+
+  lottiePlayer.addEventListener('DOMLoaded', () => {
+    if(modeEl.value === "custom") renderLayerList();
   });
 
   prevBtn.disabled =
@@ -198,7 +236,7 @@ function walkLayers(layers, tag, mode, stats, previewOnly){
   layers.forEach(l=>{
     if("ty" in l){
       stats.count++;
-      if(!previewOnly){
+      if(!previewOnly && mode !== "custom"){
         l.nm = renameName(l.nm || `Layer${stats.count}`, tag, mode, stats.count);
       }
     }
@@ -211,6 +249,71 @@ async function loadFile(file){
   return file.name.endsWith(".tgs")
     ? new TextDecoder().decode(pako.ungzip(new Uint8Array(buf)))
     : new TextDecoder().decode(new Uint8Array(buf));
+}
+
+/* --- NEW FEATURE LOGIC: LAYER EDITOR --- */
+
+modeEl.onchange = () => {
+  layerEditor.style.display = (modeEl.value === "custom") ? "block" : "none";
+  if(modeEl.value === "custom") renderLayerList();
+};
+
+function renderLayerList() {
+  layerEditor.innerHTML = "";
+  if (!previewAnimations[currentAnimIndex]) return;
+
+  const layers = previewAnimations[currentAnimIndex].layers;
+  layers.forEach((layer, idx) => {
+    const item = document.createElement("div");
+    item.className = "layer-item";
+    
+    // Highlight logic
+    item.onclick = () => highlightLayerInPreview(idx);
+
+    item.innerHTML = `
+      <span class="layer-name" id="ln-${idx}">${layer.nm || 'Layer ' + idx}</span>
+      <div class="layer-actions">
+        <button class="action-btn" onclick="renameLayerPrompt(${idx}, event)">✏️</button>
+        <button class="action-btn" onclick="toggleLayerVisibility(${idx}, event)">👁️</button>
+      </div>
+    `;
+    layerEditor.appendChild(item);
+  });
+}
+
+function renameLayerPrompt(idx, e) {
+  e.stopPropagation();
+  const layer = previewAnimations[currentAnimIndex].layers[idx];
+  const newName = prompt("Enter new layer name:", layer.nm);
+  if (newName !== null) {
+    layer.nm = newName;
+    document.getElementById(`ln-${idx}`).textContent = newName;
+  }
+}
+
+function toggleLayerVisibility(idx, e) {
+  e.stopPropagation();
+  const svgElements = document.getElementById("lottiePreview").querySelectorAll('g[clip-path]');
+  // Note: Lottie SVG structure varies, but we find the group corresponding to the layer index
+  const target = lottiePlayer.renderer.elements[idx];
+  if(target) {
+    target.isVisible = !target.isVisible;
+    target.hierarchy.forEach(h => h.baseElement.style.display = target.isVisible ? "" : "none");
+    e.target.innerText = target.isVisible ? "👁️" : "🚫";
+  }
+}
+
+function highlightLayerInPreview(idx) {
+  // Clear previous highlights
+  const allElements = document.getElementById("lottiePreview").querySelectorAll('*');
+  allElements.forEach(el => el.classList.remove("highlight-layer"));
+
+  // Apply highlight to specific layer element via Lottie renderer
+  const target = lottiePlayer.renderer.elements[idx];
+  if(target && target.baseElement) {
+    target.baseElement.classList.add("highlight-layer");
+    setTimeout(() => target.baseElement.classList.remove("highlight-layer"), 2000);
+  }
 }
 
 /* AUTO PLAY WHEN FILES IMPORTED */
@@ -246,7 +349,9 @@ filesEl.onchange = async () => {
 /* PREVIEW BUTTON */
 previewBtn.onclick = async ()=>{
   if(!filesEl.files.length) return statusEl.textContent="❌ No files selected";
-  if(!tagEl.value.trim()) return statusEl.textContent="❌ Tag is empty";
+  
+  // Only check tag if not in custom mode
+  if(modeEl.value !== "custom" && !tagEl.value.trim()) return statusEl.textContent="❌ Tag is empty";
 
   spinner.style.display="block";
   cachedData=[];
@@ -254,8 +359,10 @@ previewBtn.onclick = async ()=>{
 
   let total=0;
 
-  for(const file of filesEl.files){
-    const json = JSON.parse(await loadFile(file));
+  for(let i=0; i<filesEl.files.length; i++){
+    const file = filesEl.files[i];
+    // Use the potentially edited previewAnimations data if it exists
+    const json = previewAnimations[i] ? JSON.parse(JSON.stringify(previewAnimations[i])) : JSON.parse(await loadFile(file));
     const stats={count:0};
     walkLayers(json.layers, tagEl.value, modeEl.value, stats, true);
     total+=stats.count;
@@ -275,11 +382,17 @@ downloadBtn.onclick = ()=>{
   spinner.style.display="block";
   statusEl.textContent="Downloading...";
 
-  cachedData.forEach(item=>{
+  cachedData.forEach((item, index)=>{
     const stats={count:0};
-    walkLayers(item.json.layers, tagEl.value, modeEl.value, stats, false);
+    // For custom mode, we use the data already modified in the previewAnimations array
+    let finalJson = item.json;
+    if(modeEl.value === "custom") {
+       finalJson = previewAnimations[index];
+    } else {
+       walkLayers(finalJson.layers, tagEl.value, modeEl.value, stats, false);
+    }
 
-    const out = JSON.stringify(item.json);
+    const out = JSON.stringify(finalJson);
     const data = item.file.name.endsWith(".tgs") ? pako.gzip(out) : out;
 
     const blob = new Blob([data]);
