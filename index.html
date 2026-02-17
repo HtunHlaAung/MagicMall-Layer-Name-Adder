@@ -95,34 +95,35 @@ button:disabled{opacity:.5}
   cursor:not-allowed;
 }
 
-/* --- NEW STYLES FOR LAYER EDITOR --- */
+/* --- DEEP LAYER TREE STYLES --- */
 #layerEditor {
   display: none;
-  max-height: 250px;
+  max-height: 300px;
   overflow-y: auto;
   margin-top: 15px;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
   background: rgba(0,0,0,0.2);
+  text-align: left;
+}
+.tree-node {
+  margin-left: 15px;
+  border-left: 1px solid var(--border);
 }
 .layer-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.85rem;
-  transition: background 0.2s;
+  gap: 5px;
+  padding: 5px;
+  font-size: 0.8rem;
 }
 .layer-item:hover { background: rgba(255,255,255,0.05); }
-.layer-name { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.layer-actions { display: flex; gap: 5px; }
-.action-btn {
-  background: none; border: none; color: var(--muted);
-  cursor: pointer; width: 24px; padding: 0; margin: 0;
-}
+.layer-name { flex-grow: 1; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toggle-icon { cursor: pointer; width: 15px; display: inline-block; font-size: 10px; }
+.action-btn { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; font-size: 12px; }
 .action-btn:hover { color: var(--accent); }
+.hidden-children { display: none; }
 .highlight-layer { outline: 2px solid var(--accent) !important; filter: drop-shadow(0 0 5px var(--accent)); }
 </style>
 </head>
@@ -146,7 +147,7 @@ button:disabled{opacity:.5}
     <option value="prefix">Prefix — @Tag LayerName</option>
     <option value="replace">Replace — @Tag</option>
     <option value="index">Indexed — @Tag_001</option>
-    <option value="custom">Toggle Layer — Custom Rename</option>
+    <option value="custom">Toggle Layers — Deep Custom Edit</option>
   </select>
 
   <div id="layerEditor"></div>
@@ -173,12 +174,8 @@ const layerEditor = document.getElementById("layerEditor");
 
 function playAnimationByIndex(index){
   if(!previewAnimations.length) return;
-
   currentAnimIndex = index;
-
-  if(lottiePlayer){
-    lottiePlayer.destroy();
-  }
+  if(lottiePlayer) lottiePlayer.destroy();
 
   lottiePlayer = lottie.loadAnimation({
     container: document.getElementById("lottiePreview"),
@@ -189,27 +186,15 @@ function playAnimationByIndex(index){
   });
 
   lottiePlayer.addEventListener('DOMLoaded', () => {
-    if(modeEl.value === "custom") renderLayerList();
+    if(modeEl.value === "custom") renderDeepLayerTree();
   });
 
-  prevBtn.disabled =
-    previewAnimations.length <= 1 || currentAnimIndex === 0;
-  nextBtn.disabled =
-    previewAnimations.length <= 1 ||
-    currentAnimIndex === previewAnimations.length - 1;
+  prevBtn.disabled = previewAnimations.length <= 1 || currentAnimIndex === 0;
+  nextBtn.disabled = previewAnimations.length <= 1 || currentAnimIndex === previewAnimations.length - 1;
 }
 
-prevBtn.onclick = () => {
-  if(currentAnimIndex > 0){
-    playAnimationByIndex(currentAnimIndex - 1);
-  }
-};
-
-nextBtn.onclick = () => {
-  if(currentAnimIndex < previewAnimations.length - 1){
-    playAnimationByIndex(currentAnimIndex + 1);
-  }
-};
+prevBtn.onclick = () => { if(currentAnimIndex > 0) playAnimationByIndex(currentAnimIndex - 1); };
+nextBtn.onclick = () => { if(currentAnimIndex < previewAnimations.length - 1) playAnimationByIndex(currentAnimIndex + 1); };
 
 /* =======================
    RENAME LOGIC
@@ -241,6 +226,17 @@ function walkLayers(layers, tag, mode, stats, previewOnly){
       }
     }
     if(l.layers) walkLayers(l.layers, tag, mode, stats, previewOnly);
+    if(l.shapes) walkShapes(l.shapes, tag, mode, stats, previewOnly);
+  });
+}
+
+function walkShapes(shapes, tag, mode, stats, previewOnly) {
+  shapes.forEach(s => {
+    if(s.nm) {
+       stats.count++;
+       if(!previewOnly && mode !== "custom") s.nm = renameName(s.nm, tag, mode, stats.count);
+    }
+    if(s.it) walkShapes(s.it, tag, mode, stats, previewOnly);
   });
 }
 
@@ -251,129 +247,127 @@ async function loadFile(file){
     : new TextDecoder().decode(new Uint8Array(buf));
 }
 
-/* --- NEW FEATURE LOGIC: LAYER EDITOR --- */
+/* --- NEW FEATURE: DEEP TREE RENDERER --- */
 
 modeEl.onchange = () => {
   layerEditor.style.display = (modeEl.value === "custom") ? "block" : "none";
-  if(modeEl.value === "custom") renderLayerList();
+  if(modeEl.value === "custom") renderDeepLayerTree();
 };
 
-function renderLayerList() {
-  layerEditor.innerHTML = "";
-  if (!previewAnimations[currentAnimIndex]) return;
+function createTreeElement(item, index, type = 'layer') {
+  const container = document.createElement("div");
+  container.className = "tree-node-container";
 
-  const layers = previewAnimations[currentAnimIndex].layers;
-  layers.forEach((layer, idx) => {
-    const item = document.createElement("div");
-    item.className = "layer-item";
+  const row = document.createElement("div");
+  row.className = "layer-item";
+
+  const hasChildren = (item.layers && item.layers.length) || (item.it && item.it.length);
+  
+  const toggle = document.createElement("span");
+  toggle.className = "toggle-icon";
+  toggle.innerHTML = hasChildren ? "▶" : "";
+  
+  const nameLabel = document.createElement("span");
+  nameLabel.className = "layer-name";
+  nameLabel.textContent = item.nm || (type === 'layer' ? `Layer ${index}` : `Group ${index}`);
+  
+  // Highlight on click
+  nameLabel.onclick = () => {
+    const el = lottiePlayer.renderer.elements.find(e => e.data === item);
+    if(el && el.baseElement) {
+        el.baseElement.classList.add("highlight-layer");
+        setTimeout(() => el.baseElement.classList.remove("highlight-layer"), 1500);
+    }
+  };
+
+  const actions = document.createElement("div");
+  actions.innerHTML = `
+    <button class="action-btn" title="Rename">✏️</button>
+    <button class="action-btn" title="Hide/Show">👁️</button>
+  `;
+
+  actions.querySelectorAll('.action-btn')[0].onclick = () => {
+    const n = prompt("New Name:", item.nm);
+    if(n) { item.nm = n; nameLabel.textContent = n; }
+  };
+
+  actions.querySelectorAll('.action-btn')[1].onclick = (e) => {
+    const el = lottiePlayer.renderer.elements.find(e => e.data === item);
+    if(el) {
+      const isHidden = el.baseElement.style.display === "none";
+      el.baseElement.style.display = isHidden ? "" : "none";
+      e.target.innerText = isHidden ? "👁️" : "🚫";
+    }
+  };
+
+  row.appendChild(toggle);
+  row.appendChild(nameLabel);
+  row.appendChild(actions);
+  container.appendChild(row);
+
+  if(hasChildren) {
+    const childContainer = document.createElement("div");
+    childContainer.className = "tree-node hidden-children";
     
-    // Highlight logic
-    item.onclick = () => highlightLayerInPreview(idx);
+    toggle.onclick = () => {
+      const isHidden = childContainer.classList.toggle("hidden-children");
+      toggle.innerHTML = isHidden ? "▶" : "▼";
+    };
 
-    item.innerHTML = `
-      <span class="layer-name" id="ln-${idx}">${layer.nm || 'Layer ' + idx}</span>
-      <div class="layer-actions">
-        <button class="action-btn" onclick="renameLayerPrompt(${idx}, event)">✏️</button>
-        <button class="action-btn" onclick="toggleLayerVisibility(${idx}, event)">👁️</button>
-      </div>
-    `;
-    layerEditor.appendChild(item);
+    if(item.layers) item.layers.forEach((l, i) => childContainer.appendChild(createTreeElement(l, i, 'layer')));
+    if(item.it) item.it.forEach((s, i) => childContainer.appendChild(createTreeElement(s, i, 'group')));
+    
+    container.appendChild(childContainer);
+  }
+
+  return container;
+}
+
+function renderDeepLayerTree() {
+  layerEditor.innerHTML = "<strong>Layer Hierarchy:</strong><br>";
+  if (!previewAnimations[currentAnimIndex]) return;
+  previewAnimations[currentAnimIndex].layers.forEach((l, i) => {
+    layerEditor.appendChild(createTreeElement(l, i));
   });
-}
-
-function renameLayerPrompt(idx, e) {
-  e.stopPropagation();
-  const layer = previewAnimations[currentAnimIndex].layers[idx];
-  const newName = prompt("Enter new layer name:", layer.nm);
-  if (newName !== null) {
-    layer.nm = newName;
-    document.getElementById(`ln-${idx}`).textContent = newName;
-  }
-}
-
-function toggleLayerVisibility(idx, e) {
-  e.stopPropagation();
-  const svgElements = document.getElementById("lottiePreview").querySelectorAll('g[clip-path]');
-  // Note: Lottie SVG structure varies, but we find the group corresponding to the layer index
-  const target = lottiePlayer.renderer.elements[idx];
-  if(target) {
-    target.isVisible = !target.isVisible;
-    target.hierarchy.forEach(h => h.baseElement.style.display = target.isVisible ? "" : "none");
-    e.target.innerText = target.isVisible ? "👁️" : "🚫";
-  }
-}
-
-function highlightLayerInPreview(idx) {
-  // Clear previous highlights
-  const allElements = document.getElementById("lottiePreview").querySelectorAll('*');
-  allElements.forEach(el => el.classList.remove("highlight-layer"));
-
-  // Apply highlight to specific layer element via Lottie renderer
-  const target = lottiePlayer.renderer.elements[idx];
-  if(target && target.baseElement) {
-    target.baseElement.classList.add("highlight-layer");
-    setTimeout(() => target.baseElement.classList.remove("highlight-layer"), 2000);
-  }
 }
 
 /* AUTO PLAY WHEN FILES IMPORTED */
 filesEl.onchange = async () => {
   previewAnimations = [];
   currentAnimIndex = 0;
-
   if(!filesEl.files.length) return;
-
   spinner.style.display="block";
   statusEl.textContent="Loading animations...";
-
   try{
     for(const file of filesEl.files){
       const json = JSON.parse(await loadFile(file));
       if(json.layers) previewAnimations.push(json);
     }
-
-    if(previewAnimations.length){
-      playAnimationByIndex(0);
-    }
-
-    statusEl.textContent =
-      `Loaded ${previewAnimations.length} animation(s)`;
-
-  }catch(e){
-    statusEl.textContent="❌ Preview error";
-  }
-
+    if(previewAnimations.length) playAnimationByIndex(0);
+    statusEl.textContent = `Loaded ${previewAnimations.length} animation(s)`;
+  }catch(e){ statusEl.textContent="❌ Preview error"; }
   spinner.style.display="none";
 };
 
 /* PREVIEW BUTTON */
 previewBtn.onclick = async ()=>{
   if(!filesEl.files.length) return statusEl.textContent="❌ No files selected";
-  
-  // Only check tag if not in custom mode
   if(modeEl.value !== "custom" && !tagEl.value.trim()) return statusEl.textContent="❌ Tag is empty";
-
   spinner.style.display="block";
   cachedData=[];
   downloadBtn.disabled=true;
-
   let total=0;
-
   for(let i=0; i<filesEl.files.length; i++){
     const file = filesEl.files[i];
-    // Use the potentially edited previewAnimations data if it exists
     const json = previewAnimations[i] ? JSON.parse(JSON.stringify(previewAnimations[i])) : JSON.parse(await loadFile(file));
     const stats={count:0};
     walkLayers(json.layers, tagEl.value, modeEl.value, stats, true);
     total+=stats.count;
     cachedData.push({file,json});
   }
-
-  previewEl.textContent =
-    `Files: ${filesEl.files.length} | Layers: ${total}`;
+  previewEl.textContent = `Files: ${filesEl.files.length} | Layers: ${total}`;
   statusEl.textContent="Preview ready ✔";
   downloadBtn.disabled=false;
-
   spinner.style.display="none";
 };
 
@@ -381,27 +375,22 @@ previewBtn.onclick = async ()=>{
 downloadBtn.onclick = ()=>{
   spinner.style.display="block";
   statusEl.textContent="Downloading...";
-
   cachedData.forEach((item, index)=>{
-    const stats={count:0};
-    // For custom mode, we use the data already modified in the previewAnimations array
     let finalJson = item.json;
     if(modeEl.value === "custom") {
        finalJson = previewAnimations[index];
     } else {
+       const stats={count:0};
        walkLayers(finalJson.layers, tagEl.value, modeEl.value, stats, false);
     }
-
     const out = JSON.stringify(finalJson);
     const data = item.file.name.endsWith(".tgs") ? pako.gzip(out) : out;
-
     const blob = new Blob([data]);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "renamed_" + item.file.name;
     a.click();
   });
-
   spinner.style.display="none";
   statusEl.textContent="✔ Download complete";
 };
